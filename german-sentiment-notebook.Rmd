@@ -98,10 +98,22 @@ create_document_term_matrix <- function(sentence, language) {
 # the columns with an alternation will be added to the original base word
 # TODO: the columns with no distinction between upper and lower will be added together
 
+# calculate sum for specified columns
+calculate_column_sums <- function(dtm_forms, contained_alt_forms) {
+  selected_columns <- dtm_forms[, contained_alt_forms, drop = FALSE]
+  
+  if (ncol(selected_columns) > 1) {
+    result <- apply(selected_columns, 1, sum)
+  } else {
+    result <- selected_columns
+  }
+  
+  return(result)
+}
+
 combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
   all_terms <- Terms(dtm_forms)
   dtm_forms <- as.matrix(dtm_forms)
-  lexical_items <- lexical_items
   
   base_words_in_dtm <- lapply(lexical_items, function(item) item %in% all_terms)
   
@@ -110,9 +122,10 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
     lex <- lexical_items[i]
     alternatives <- alt_forms[i]
     alternatives <- unlist(alternatives)
-    contains_lexical_item <- base_words_in_dtm[[i]]
+    lexical_item_in_dtm <- base_words_in_dtm[[i]]
   
-    # get a boolean list of which alternate forms for lexical item i appear in the DTM
+    # get a boolean list of which alternate forms 
+    # for lexical item i appear in the DTM
     contains_alt_forms <- lapply(alternatives, function(x) x %in% all_terms)
     contains_alt_forms <- unlist(contains_alt_forms)
     
@@ -121,40 +134,28 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
     
     # first we'll concatenate the columns into the one base word column
     # since they will all have the same sentiment value
-    if (!contains_lexical_item) {
-      if (length(contained_alt_forms) == 0) {
+    n_alt_forms_in_dtm <- length(contained_alt_forms)
+    if (!lexical_item_in_dtm && n_alt_forms_in_dtm == 0) {
         next
       } 
-      else {
+    else if(!lexical_item_in_dtm) {
         empty_col <- rep(0, nrow(dtm_forms))
         dtm_forms <- cbind(dtm_forms, empty_col)
         colnames(dtm_forms)[ncol(dtm_forms)] <- lex
       }
-    }
+      # otherwise the lexical item is in the DTM
+      # and we don't need to create a column
     
-    if (length(contained_alt_forms) > 1) {
-        alternate_form_sum <- rowSums(dtm_forms[, contained_alt_forms])
-        dtm_forms[, lex] <- 
-        if (!contains_lexical_item) {
-            alternate_form_sum
-        } 
-        else {
-            dtm_forms[, lex] + alternate_form_sum
-        }
-    } 
-    else if (length(contained_alt_forms) == 1) {
-      dtm_forms[, lex] <- 
-        if (!contains_lexical_item) {
-            dtm_forms[, contained_alt_forms[1]]
-        } 
-        else {
-            dtm_forms[, lex] + dtm_forms[, contained_alt_forms[1]]
-        }
-    }
+    if (n_alt_forms_in_dtm >= 1) {
+      # does the following line work?
+        alternate_form_sum <- calculate_column_sums(dtm_forms, 
+                                                    contained_alt_forms)
+        
+        dtm_forms[, lex] <- dtm_forms[, lex] + alternate_form_sum
+      } 
     
-    # then we remove the original alternative form columns from the table
-    dtm_forms <- dtm_forms[, !colnames(dtm_forms) %in% contained_alt_forms]
-    
+      # then we remove the original alternative form columns from the table
+      dtm_forms <- dtm_forms[, !colnames(dtm_forms) %in% contained_alt_forms]
   }
   # then we remove all the words which are not base words in the sentiment
   # dataset as they will not contribute to the final score
@@ -168,20 +169,32 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
 ## Column-wise Matrix Multiplication of Sentiment Scores
 
 ```{r}
-apply_sentiment_scores <- function(dtm_forms, lexical_items, sentiment_scores) {
+apply_sentiment_scores <- function(dtm_forms, 
+                                   lexical_items, 
+                                   sentiment_scores) {
   cols <- colnames(dtm_forms)
   required_scores <- lapply(lexical_items, function(x) x %in% colnames(dtm_forms))
   required_scores <- unlist(required_scores)
   required_scores <- sentiment_scores[required_scores]
   
   # apply them colwise
+  # required_scores <- matrix(required_scores, ncol = 1)
   dtm_forms <- dtm_forms %*% diag(required_scores)
+  # print(dtm_forms)
   colnames(dtm_forms) <- cols
   return (dtm_forms)
 }
 ```
 
-## Run sentiment analysis
+## Sentiment Matrix
+
+The sentiment matrix corresponds to
+
+-   (sentence, sentiment-relevant term) = sentiment score
+
+where the sentiment score is:
+
+-   (\# sentence occurrences) x (Leipzig SentiWS sentiment score for a given term)
 
 ```{r}
 # A matrix with each sentence as a row and each term as a column
@@ -226,16 +239,16 @@ run_sentiment_analysis <- function(sentences, df_sentiws_neg, df_sentiws_pos) {
   sentence_sentiments_pos <- rowSums(sentiment_matrix_pos)
   return (sentence_sentiments_neg + sentence_sentiments_pos)
 }
-
-# TODO: Run on whole dataset
-# TODO: Find out which proper nouns have the lowest sentiment scores
 ```
+
+## Run Sentiment Analysis
 
 ```{r}
 treebank_data_path <- "data/propn-grew-query-results.tsv"
 treebank_data <- load_treebank(treebank_data_path, treebank_cols)
-n_sentences <- 500
-sentences <- as.vector(treebank_data[1:n_sentences, 'full_sentence'])
+print(paste("Number of sentences: ", nrow(treebank_data)))
+# n_sentences <- 500
+sentences <- as.vector(treebank_data$full_sentence[1:200])
 
 sentiments <- run_sentiment_analysis(sentences, df_sentiws_neg, df_sentiws_pos)
 
@@ -257,5 +270,5 @@ treebank_data$sentiment <- NA  # This will create a new column with all NA value
 # assign the new values to the first few rows
 treebank_data[1:length(sentiments), "sentiment"] <- sentiments
 
-head(treebank_data)
+View(treebank_data)
 ```
