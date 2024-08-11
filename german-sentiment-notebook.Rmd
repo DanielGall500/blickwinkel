@@ -3,85 +3,105 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-
+## Dataset Paths & Reading TSV Files
 
 ```{r}
+# SentiWS provides a file for positive scores and negative scores separately
 sentiws_neg_path <- "data/SentiWS/SentiWS_v2.0_Negative.txt"
+sentiws_pos_path <- "data/SentiWS/SentiWS_v2.0_Positive.txt"
 
-# Read the file into a dataframe
-df_sentiws_neg <- read.table(sentiws_neg_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE, col.names=c("lexical_item", "sent_score", "alt_forms"))
+# create a simple function to read in tab-separated value formats
+read_tsv <- function(path, cols) {
+  table <- read.table(path, 
+                      header = TRUE, 
+                      sep = "\t", 
+                      stringsAsFactors = FALSE,
+                      fill = TRUE,
+                      row.names = NULL,
+                      col.names = cols)
+  print(table)
+  return (table)
+}
+```
 
-split_item_and_pos <- function(x) {
-  split_str <- strsplit(x, split="\\|")[[1]]
-  return(split_str)
+## Load SentiWS Positive & Negative Datasets
+
+```{r}
+load_sentiws <- function(path) {
+  cols <- c("lexical_item", "sent_score", "alt_forms")
+  sentiws_data <- read_tsv(path, cols)
+  
+  # we first need to split the lexical items and POS tags
+  # since they are initially provided in the same column
+  item_and_pos_col <- sentiws_data$lexical_item
+  item_pos_split <- lapply(item_and_pos_col, 
+                           function(x) strsplit(x, split="\\|")[[1]])
+  
+  # create a column for the items and the pos tags
+  lexical_items <- sapply(item_pos_split, function(x) x[1])
+  pos_tags <- sapply(item_pos_split, function(x) x[2])
+  
+  # update the columns with item and pos tag
+  sentiws_data["lexical_item"] = lexical_items
+  sentiws_data["pos"] = pos_tags
+  
+  return (sentiws_data)
 }
 
-item_pos_list <- lapply(df_sentiws_neg$lexical_item, split_item_and_pos)
+# load the positive and negative SentiWS sentiment scores
+# as a dataframe with some preprocessing
+df_sentiws_pos <- load_sentiws(sentiws_pos_path)
+df_sentiws_neg <- load_sentiws(sentiws_neg_path)
 
-words <- sapply(item_pos_list, function(x) x[1])
-pos_tags <- sapply(item_pos_list, function(x) x[2])
-
-df_sentiws_neg["lexical_item"] = words
-df_sentiws_neg["pos"] = pos_tags
-head(df_sentiws_neg)
-
+df_sentiws_neg[1:5,]
+df_sentiws_pos[1:5,]
 
 ```
+
+## Load Treebank Data
+
+```{r}
+load_treebank <- function(path, cols) {
+  treebank_cols <- c("id", "left_context", "pivot", "right_context")
+  treebank_data <- read_tsv(treebank_data_path, treebank_cols)
+  treebank_data$full_sentence <- paste(
+    treebank_data$left_context, 
+    treebank_data$pivot, 
+    treebank_data$right_context,
+    sep = " ")
+  return(treebank_data)
+}
+```
+
+## Preprocessing & Creation of Document-Term Matrix
 
 ```{r}
 library(tm)
-
-df <- read.delim("data/propn-grew-query-results.tsv", sep="\t")
-full_sentence <- function(row) {
-  return(paste(row['left_context'], row['pivot'], row['right_context']))
+create_document_term_matrix <- function(sentence, language) {
+  # VCorpus in tm refers to "Volatile" corpus which means that the corpus is stored in memory and would be destroyed when the R object containing it is destroyed.
+  # contrast this with PCorpus or Permanent Corpus which are stored outside the memory in a db.
+  corpus <- VCorpus(VectorSource(sentences))
+  
+  # preprocessing: remove whitespace, punctuation, and stopwords
+  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeWords, stopwords(language))
+  return (
+    DocumentTermMatrix(corpus, control = list(tolower = FALSE))
+  )
 }
-df['full_sentence'] <- apply(df, 1, full_sentence)
-head(df)
-
-example <- c("Ich hasse mein Leben Abbruch.",
-             "Ich liebe den Lebensstandard in Leipzig Abbruches Abgrund.",
-             "7 Tage Erholung im Ferienhaus am Müritz See in einer idyllischen Landschaft Abschreckung Abschreckung Abschreckung.")
-
-sentences <- as.vector(df[1:50, 'full_sentence'])
-print(sentences)
-
-# VCorpus in tm refers to "Volatile" corpus which means that the corpus is stored in memory and would be destroyed when the R object containing it is destroyed.
-# Contrast this with PCorpus or Permanent Corpus which are stored outside the memory in a db.
-corpus <- VCorpus(VectorSource(sentences))
-corpus <- tm_map(corpus, stripWhitespace)
-corpus <- tm_map(corpus, removePunctuation)
-# corpus <- tm_map(corpus, content_transformer(tolower))
-corpus <- tm_map(corpus, removeWords, stopwords("german"))
-
-content(corpus[[1]])
-
-dtm <- DocumentTermMatrix(corpus, control = list(tolower = FALSE))
-inspect(dtm)
-
-# dtm <- dtm[, !Terms(dtm) %in% c("ich")]
-inspect(dtm)
-
-# the columns with an alternation will be added to the original base word
-# the columns with no distinction between upper and lower will be added together
-
-sentiment_score <- function(sentence) {
-  words <- strsplit(sentence, split=" ")
-  return (words)
-}
-sentiment_score(example)
 ```
 
-```{r}
-df_sentiws_neg[1,c("lexical_item","alt_forms")]
-lexical_items <- df_sentiws_neg$lexical_item
+## Sentence-Term Frequency Matrix
 
-inspect(dtm)
+```{r}
+# the columns with an alternation will be added to the original base word
+# TODO: the columns with no distinction between upper and lower will be added together
 
 combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
   all_terms <- Terms(dtm_forms)
   dtm_forms <- as.matrix(dtm_forms)
   lexical_items <- lexical_items
-  n <- 10
   
   base_words_in_dtm <- lapply(lexical_items, function(item) item %in% all_terms)
   
@@ -143,21 +163,11 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
   return (dtm_forms)
 }
 
-# check which alternate forms it contains - should be a vector
-alt_forms_as_str <- df_sentiws_neg$alt_forms
-alt_forms_processed <- lapply(alt_forms_as_str, function(x) strsplit(x, split = ","))
-alt_forms_processed <- unlist(alt_forms_processed)
-
-lexical_items <- unlist(df_sentiws_neg$lexical_item)
-
-final_dtm <- combine_forms(dtm, lexical_items, alt_forms_processed)
-print(final_dtm)
 ```
-```{r}
-final_dtm[,2]
-final_dtm
 
-sentiment_scores <- unlist(df_sentiws_neg$sent_score)
+## Column-wise Matrix Multiplication of Sentiment Scores
+
+```{r}
 apply_sentiment_scores <- function(dtm_forms, lexical_items, sentiment_scores) {
   cols <- colnames(dtm_forms)
   required_scores <- lapply(lexical_items, function(x) x %in% colnames(dtm_forms))
@@ -169,21 +179,83 @@ apply_sentiment_scores <- function(dtm_forms, lexical_items, sentiment_scores) {
   colnames(dtm_forms) <- cols
   return (dtm_forms)
 }
+```
 
-print(final_dtm)
-sentiment_matrix <- apply_sentiment_scores(final_dtm, lexical_items, sentiment_scores)
-print(sentiment_matrix)
+## Run sentiment analysis
 
-# final sentiment score of each sentence
-sentiment_matrix_combined <- rowSums(sentiment_matrix)
-sentiment_matrix_combined
+```{r}
+# A matrix with each sentence as a row and each term as a column
+# and the values representing the sentiment provided by that term
+# for the given sentence
+# if a term occurs multiple times in a sentence, the value corresponds to:
+# (# occurrences) x (sentiment score)
+get_sentiment_matrix <- function(dtm, df_sentiws) {
+  lexical_items <- unlist(df_sentiws$lexical_item)
 
-for (i in 1:length(sentences)) {
-  print(paste(sentences[i], sentiment_matrix_combined[i]))
+  # check which alternate forms it contains - should be a vector
+  alt_forms <- df_sentiws$alt_forms
+  alt_forms_processed <- lapply(alt_forms, 
+                                function(x) strsplit(x, split = ","))
+  alt_forms_processed <- unlist(alt_forms_processed)
+  
+  final_dtm <- combine_forms(dtm, 
+                             lexical_items, 
+                             alt_forms_processed)
+  
+  # SENTIMENT 
+  sentiment_scores <- unlist(df_sentiws$sent_score)
+  sentiment_matrix <- apply_sentiment_scores(final_dtm, 
+                                             lexical_items, 
+                                             sentiment_scores)
+  
+  return (sentiment_matrix)
+}
+
+# run the algorithm for both the negative and positive
+# Leipzig SentiWS datasets and combine them to get the
+# final sentiment score for each sentence.
+run_sentiment_analysis <- function(sentences, df_sentiws_neg, df_sentiws_pos) {
+  
+  dtm <- create_document_term_matrix(sentences, lang="german")
+  
+  sentiment_matrix_neg <- get_sentiment_matrix(dtm, df_sentiws_neg)
+  sentiment_matrix_pos <- get_sentiment_matrix(dtm, df_sentiws_pos)
+  
+  # sum together the rows of the matrix to get the sentiments
+  sentence_sentiments_neg <- rowSums(sentiment_matrix_neg)
+  sentence_sentiments_pos <- rowSums(sentiment_matrix_pos)
+  return (sentence_sentiments_neg + sentence_sentiments_pos)
 }
 
 # TODO: Run on whole dataset
 # TODO: Find out which proper nouns have the lowest sentiment scores
 ```
 
+```{r}
+treebank_data_path <- "data/propn-grew-query-results.tsv"
+treebank_data <- load_treebank(treebank_data_path, treebank_cols)
+n_sentences <- 500
+sentences <- as.vector(treebank_data[1:n_sentences, 'full_sentence'])
 
+sentiments <- run_sentiment_analysis(sentences, df_sentiws_neg, df_sentiws_pos)
+
+print("POSITIVE:")
+most_positive_indices <- which.max(sentiments)
+for (i in most_positive_indices) {
+  print(paste(sentences[i], sentiments[i], sep = " -- "))
+}
+
+print("NEGATIVE:")
+most_negative_indices <- which.min(sentiments)
+for (i in most_negative_indices) {
+  print(paste(sentences[i], sentiments[i], sep = " -- "))
+}
+
+# initialize a new column with NA values
+treebank_data$sentiment <- NA  # This will create a new column with all NA values
+
+# assign the new values to the first few rows
+treebank_data[1:length(sentiments), "sentiment"] <- sentiments
+
+head(treebank_data)
+```
