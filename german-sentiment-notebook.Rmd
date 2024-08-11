@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "German Sentiment Notebook"
 output: html_notebook
 ---
 
@@ -167,20 +167,18 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
 ```
 
 ## Column-wise Matrix Multiplication of Sentiment Scores
+The application of our sentiment scores to the matrix which contains each sentence and the Leipzig SentiWS semantically-relevant terms is carried out by a matrix multiplication of the matrix with the diagonal of the relevant sentiment scores.
 
 ```{r}
 apply_sentiment_scores <- function(dtm_forms, 
                                    lexical_items, 
                                    sentiment_scores) {
   cols <- colnames(dtm_forms)
-  required_scores <- lapply(lexical_items, function(x) x %in% colnames(dtm_forms))
+  required_scores <- lapply(lexical_items, function(x) x %in% cols)
   required_scores <- unlist(required_scores)
   required_scores <- sentiment_scores[required_scores]
   
-  # apply them colwise
-  # required_scores <- matrix(required_scores, ncol = 1)
   dtm_forms <- dtm_forms %*% diag(required_scores)
-  # print(dtm_forms)
   colnames(dtm_forms) <- cols
   return (dtm_forms)
 }
@@ -195,6 +193,17 @@ The sentiment matrix corresponds to
 where the sentiment score is:
 
 -   (\# sentence occurrences) x (Leipzig SentiWS sentiment score for a given term)
+
+For instance, take an example sentiment matrix below. We see that the rows correspond to each sentence and the columns correspond to any semantically-relevant term. That is because any terms which do not contribute to the sentiment score for at least one of the sentences has been purged. The value corresponds to the sentiment provided by that word for the given sentence. This matrix will be very sparse as each sentence will only use a small subset of the words.
+
+|            | Abstimmung | akzeptieren | Angebot | angenehm  | Anspruch  |
+|------------|------------|-------------|---------|-----------|-----------|
+| Sentence A | 1 x 0.004  | 0           | 0       | 0         | 0         |
+| Sentence B | 0          | 0           | 0       | 1 x 0.004 | 0         |
+| Sentence C | 0          | 2 x 0.004   | 0       | 0         | 0         |
+| Sentence D | 0          | 0           | 0       | 1 x 0.004 | 1 x 0.004 |
+
+The columns of the sentiment matrix can then be summed together to get the final contribution of the semantically-relevant terms to each sentence. This leaves us with a vector rather than a matrix.
 
 ```{r}
 # A matrix with each sentence as a row and each term as a column
@@ -242,13 +251,14 @@ run_sentiment_analysis <- function(sentences, df_sentiws_neg, df_sentiws_pos) {
 ```
 
 ## Run Sentiment Analysis
+We can now combine everything that we've worked on so far to run the sentiment analysis on our German sentence dataset.
 
 ```{r}
 treebank_data_path <- "data/propn-grew-query-results.tsv"
 treebank_data <- load_treebank(treebank_data_path, treebank_cols)
 print(paste("Number of sentences: ", nrow(treebank_data)))
-# n_sentences <- 500
-sentences <- as.vector(treebank_data$full_sentence[1:200])
+n_sentences <- 260
+sentences <- as.vector(treebank_data$full_sentence[1:n_sentences])
 
 sentiments <- run_sentiment_analysis(sentences, df_sentiws_neg, df_sentiws_pos)
 
@@ -265,10 +275,56 @@ for (i in most_negative_indices) {
 }
 
 # initialize a new column with NA values
-treebank_data$sentiment <- NA  # This will create a new column with all NA values
+treebank_data$sentiment <- 0  # This will create a new column with all NA values
 
 # assign the new values to the first few rows
 treebank_data[1:length(sentiments), "sentiment"] <- sentiments
 
 View(treebank_data)
+```
+
+## Plotting the Results
+We will view the proper nouns which are referenced in the top 15 most positive and negative sentences. These will be plotted using GGPlot.
+
+```{r}
+library(ggplot2)
+
+# order dataset based on sentiment score
+df_sorted <- treebank_data[order(treebank_data$sentiment), ]
+
+# subset into the most positive and most negative
+n_results <- 15
+top_10 <- tail(df_sorted, n_results)
+bottom_10 <- head(df_sorted, n_results)
+df_top_bottom <- rbind(bottom_10, top_10)
+
+# plot the results
+ggplot(df_top_bottom, 
+       aes(x = reorder(pivot, sentiment), 
+                          y = sentiment, 
+                          fill = sentiment > 0)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_classic() +
+  labs(title = "Top 10 Highest and Lowest Sentiment Scores",
+       x = "Proper Noun",
+       y = "Sentiment Score") + 
+  theme(legend.position = "none") +
+  ylim(-1.2,1.2)
+
+```
+
+We may be interested to see the entire sentence for each of these, so these will also be printed below.
+```{r}
+print_sentiment_messages <- function(df) {
+  apply(df, 1, function(row) {
+    message <- paste("Sentence:", 
+                     row["full_sentence"], 
+                     "\nSentiment Score:", 
+                     row["sentiment"])
+    cat(message, "\n\n")
+  })
+}
+
+print_sentiment_messages(df_top_bottom)
 ```
