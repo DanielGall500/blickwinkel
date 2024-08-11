@@ -1,0 +1,189 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+sentiws_neg_path <- "data/SentiWS/SentiWS_v2.0_Negative.txt"
+
+# Read the file into a dataframe
+df_sentiws_neg <- read.table(sentiws_neg_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE, col.names=c("lexical_item", "sent_score", "alt_forms"))
+
+split_item_and_pos <- function(x) {
+  split_str <- strsplit(x, split="\\|")[[1]]
+  return(split_str)
+}
+
+item_pos_list <- lapply(df_sentiws_neg$lexical_item, split_item_and_pos)
+
+words <- sapply(item_pos_list, function(x) x[1])
+pos_tags <- sapply(item_pos_list, function(x) x[2])
+
+df_sentiws_neg["lexical_item"] = words
+df_sentiws_neg["pos"] = pos_tags
+head(df_sentiws_neg)
+
+
+```
+
+```{r}
+library(tm)
+
+df <- read.delim("data/propn-grew-query-results.tsv", sep="\t")
+full_sentence <- function(row) {
+  return(paste(row['left_context'], row['pivot'], row['right_context']))
+}
+df['full_sentence'] <- apply(df, 1, full_sentence)
+head(df)
+
+example <- c("Ich hasse mein Leben Abbruch.",
+             "Ich liebe den Lebensstandard in Leipzig Abbruches Abgrund.",
+             "7 Tage Erholung im Ferienhaus am Müritz See in einer idyllischen Landschaft Abschreckung Abschreckung Abschreckung.")
+
+sentences <- as.vector(df[1:50, 'full_sentence'])
+print(sentences)
+
+# VCorpus in tm refers to "Volatile" corpus which means that the corpus is stored in memory and would be destroyed when the R object containing it is destroyed.
+# Contrast this with PCorpus or Permanent Corpus which are stored outside the memory in a db.
+corpus <- VCorpus(VectorSource(sentences))
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, removePunctuation)
+# corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removeWords, stopwords("german"))
+
+content(corpus[[1]])
+
+dtm <- DocumentTermMatrix(corpus, control = list(tolower = FALSE))
+inspect(dtm)
+
+# dtm <- dtm[, !Terms(dtm) %in% c("ich")]
+inspect(dtm)
+
+# the columns with an alternation will be added to the original base word
+# the columns with no distinction between upper and lower will be added together
+
+sentiment_score <- function(sentence) {
+  words <- strsplit(sentence, split=" ")
+  return (words)
+}
+sentiment_score(example)
+```
+
+```{r}
+df_sentiws_neg[1,c("lexical_item","alt_forms")]
+lexical_items <- df_sentiws_neg$lexical_item
+
+inspect(dtm)
+
+combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
+  all_terms <- Terms(dtm_forms)
+  dtm_forms <- as.matrix(dtm_forms)
+  lexical_items <- lexical_items
+  n <- 10
+  
+  base_words_in_dtm <- lapply(lexical_items, function(item) item %in% all_terms)
+  
+  for (i in 1:length(lexical_items)) {
+    # check if it contains the lexical_item
+    lex <- lexical_items[i]
+    alternatives <- alt_forms[i]
+    alternatives <- unlist(alternatives)
+    contains_lexical_item <- base_words_in_dtm[[i]]
+  
+    # get a boolean list of which alternate forms for lexical item i appear in the DTM
+    contains_alt_forms <- lapply(alternatives, function(x) x %in% all_terms)
+    contains_alt_forms <- unlist(contains_alt_forms)
+    
+    # isolate only those alternate forms which appear
+    contained_alt_forms <- alternatives[contains_alt_forms]
+    
+    # first we'll concatenate the columns into the one base word column
+    # since they will all have the same sentiment value
+    if (!contains_lexical_item) {
+      if (length(contained_alt_forms) == 0) {
+        next
+      } 
+      else {
+        empty_col <- rep(0, nrow(dtm_forms))
+        dtm_forms <- cbind(dtm_forms, empty_col)
+        colnames(dtm_forms)[ncol(dtm_forms)] <- lex
+      }
+    }
+    
+    if (length(contained_alt_forms) > 1) {
+        alternate_form_sum <- rowSums(dtm_forms[, contained_alt_forms])
+        dtm_forms[, lex] <- 
+        if (!contains_lexical_item) {
+            alternate_form_sum
+        } 
+        else {
+            dtm_forms[, lex] + alternate_form_sum
+        }
+    } 
+    else if (length(contained_alt_forms) == 1) {
+      dtm_forms[, lex] <- 
+        if (!contains_lexical_item) {
+            dtm_forms[, contained_alt_forms[1]]
+        } 
+        else {
+            dtm_forms[, lex] + dtm_forms[, contained_alt_forms[1]]
+        }
+    }
+    
+    # then we remove the original alternative form columns from the table
+    dtm_forms <- dtm_forms[, !colnames(dtm_forms) %in% contained_alt_forms]
+    
+  }
+  # then we remove all the words which are not base words in the sentiment
+  # dataset as they will not contribute to the final score
+  # behaves strangely if only one column returned
+  dtm_forms <- dtm_forms[, colnames(dtm_forms) %in% lexical_items]
+  return (dtm_forms)
+}
+
+# check which alternate forms it contains - should be a vector
+alt_forms_as_str <- df_sentiws_neg$alt_forms
+alt_forms_processed <- lapply(alt_forms_as_str, function(x) strsplit(x, split = ","))
+alt_forms_processed <- unlist(alt_forms_processed)
+
+lexical_items <- unlist(df_sentiws_neg$lexical_item)
+
+final_dtm <- combine_forms(dtm, lexical_items, alt_forms_processed)
+print(final_dtm)
+```
+```{r}
+final_dtm[,2]
+final_dtm
+
+sentiment_scores <- unlist(df_sentiws_neg$sent_score)
+apply_sentiment_scores <- function(dtm_forms, lexical_items, sentiment_scores) {
+  cols <- colnames(dtm_forms)
+  required_scores <- lapply(lexical_items, function(x) x %in% colnames(dtm_forms))
+  required_scores <- unlist(required_scores)
+  required_scores <- sentiment_scores[required_scores]
+  
+  # apply them colwise
+  dtm_forms <- dtm_forms %*% diag(required_scores)
+  colnames(dtm_forms) <- cols
+  return (dtm_forms)
+}
+
+print(final_dtm)
+sentiment_matrix <- apply_sentiment_scores(final_dtm, lexical_items, sentiment_scores)
+print(sentiment_matrix)
+
+# final sentiment score of each sentence
+sentiment_matrix_combined <- rowSums(sentiment_matrix)
+sentiment_matrix_combined
+
+for (i in 1:length(sentences)) {
+  print(paste(sentences[i], sentiment_matrix_combined[i]))
+}
+
+# TODO: Run on whole dataset
+# TODO: Find out which proper nouns have the lowest sentiment scores
+```
+
+
