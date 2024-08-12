@@ -1,0 +1,16 @@
+Package: blickwinkel
+Title: Batch Sentiment Analysis for German
+Version: 1.0.0
+Authors@R: 
+    person("Daniel", "Gallagher", , "daniel.gallagher.js@gmail.com", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0001-8103-949X"))
+Description: Uses the Leipzig SentiWS resource to carry out sentiment analysis on a batch of German sentences.
+License: MIT
+Imports:
+    tm
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Suggests: 
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
