@@ -3,7 +3,43 @@ title: "German Sentiment Notebook"
 output: html_notebook
 ---
 
+# Sentiment of Named Entities in German
+
+## Batch Sentiment Analysis of German Using SentiWS & Matrices
+
+**Author:** Daniel Gallagher
+
+This project builds a batch sentiment analyser for German based on the Leipzig SentiWS sentiment resource. Testing is performed on a subset of the UD German GSD treebank in order to determine sentiment towards particular named entities.
+
+**Leipzig SentiWS Dataset**
+
+This project uses the Leipzig SentiWS dataset to perform semantic analysis of German sentences. SentiWS is a publicly-available resource for calculating German sentiment. It provides a dataset of German terms and their assigned sentiment score, which can range from -1 (very negative sentiment) to +1 (very positive sentiment). It additionally lists their part-of-speech tag as well as any alterations of that word that can appear. SentiWS was created by Remus et al. at the NLP department of the University of Leipzig.
+
+**UD German GSD**
+
+The sentence data used for testing was collected from the UD German GSD treebank. A query was run using the *Grew* query language which extracted any sentences which contained:
+
+-   Any one-word named entities which did not have a determiner or number modifying them.
+
+The query can be seen below:
+
+``` sql
+pattern { X [NamedEntity=Yes, upos="PROPN"]; }
+without { X -[det|nummod]-> Y }
+without { Z -[flat]-> X }
+```
+
+**Batch Sentiment Analysis**
+
+The term 'batch' refers to the fact that this tool can carry out sentiment analysis across many samples at once rather than running on each sentence individually. This is carried out through the creation of sparse sentiment matrices and their manipulation in order to find the final sentiment scores for each sentence.
+
+**Research Question**
+
+As we have seen, the treebank data that we have collected has isolated named entities in German. The features of this dataset include *left_context, pivot, right_context*. The *pivot* here is the named entity, and that is surrounded by the left and right context. Once we batch sentiment analysis across the dataset we will have sentiment scores for each sentence. The purpose of this setup is to find the named entities which are mentioned in the most positive and most negative contexts. While this dataset will be a small sample of only 260 sentences, it will allow us to test the sentiment analyser as well as provide some basic insights into this question. This can be particularly useful for performing large sentiment analysis across categories to determine public opinion towards a particular entity.
+
 ## Dataset Paths & Reading TSV Files
+
+We will initially start with a few basics. We will be working with the TSV instead of CSV format and will therefore require a function which allows us to read this in.
 
 ```{r}
 # SentiWS provides a file for positive scores and negative scores separately
@@ -19,12 +55,13 @@ read_tsv <- function(path, cols) {
                       fill = TRUE,
                       row.names = NULL,
                       col.names = cols)
-  print(table)
   return (table)
 }
 ```
 
 ## Load SentiWS Positive & Negative Datasets
+
+The Leipzig SentiWS dataset comes with a lexical item and its POS tag, a sentiment score, and the alternate forms that a lexical item takes. We will perform some preprocessing to separate the lexical item and its POS tag into separate columns.
 
 ```{r}
 load_sentiws <- function(path) {
@@ -60,6 +97,16 @@ df_sentiws_pos[1:5,]
 
 ## Load Treebank Data
 
+The sentence data for this project has been taken from the **UD German GSD** treebank. The following query was run in order to isolate any sentences which contained proper nouns:
+
+``` sql
+pattern { X [NamedEntity=Yes, upos="PROPN"]; }
+without { X -[det|nummod]-> Y }
+without { Z -[flat]-> X }
+```
+
+This query found any one-word named entities which did not have a determiner or number modifying them. The results were then saved in a TSV format and can be loaded using the following function.
+
 ```{r}
 load_treebank <- function(path, cols) {
   treebank_cols <- c("id", "left_context", "pivot", "right_context")
@@ -68,16 +115,27 @@ load_treebank <- function(path, cols) {
     treebank_data$left_context, 
     treebank_data$pivot, 
     treebank_data$right_context,
-    sep = " ")
+    sep = "")
   return(treebank_data)
 }
 ```
 
 ## Preprocessing & Creation of Document-Term Matrix
 
+A document-term matrix is created using the *tm* package. First, a VCorpus (volatile corpus) is created. This is a corpus which is only stored temporarily until the R object is destroyed. Preprocessing is carried out which:
+
+-   Strips whitespace.
+
+-   Removes punctuation.
+
+-   Removes stopwords.
+
+A document-term matrix is then created.
+
 ```{r}
 library(tm)
-create_document_term_matrix <- function(sentence, language) {
+create_document_term_matrix <- function(sentence, 
+                                        language) {
   # VCorpus in tm refers to "Volatile" corpus which means that the corpus is stored in memory and would be destroyed when the R object containing it is destroyed.
   # contrast this with PCorpus or Permanent Corpus which are stored outside the memory in a db.
   corpus <- VCorpus(VectorSource(sentences))
@@ -94,18 +152,24 @@ create_document_term_matrix <- function(sentence, language) {
 
 ## Sentence-Term Frequency Matrix
 
-```{r}
-# the columns with an alternation will be added to the original base word
-# TODO: the columns with no distinction between upper and lower will be added together
+Columns (i.e terms) in the Document-Term matrix will be manipulated based on the following criteria:
 
+-   If a sentence doesn't contain a lexical item or its alterations, move on.
+-   If a sentence doesn't contain a lexical item but contains one or more alterations, initialise a zero column for the lexical item and set it equal to the sum of any alterations in a sentence.
+-   If a sentence contains both a lexical item and one or more alterations, sum the alterations and append them to the lexical item column.
+-   Finally, remove any columns from the DTM in which the term is not semantically relevant. That is, it does not occur in the SentiWS dataset.
+
+The purpose of these rules is to end up with a Document-Term Matrix which contains only the lexical items of the Leipzig SentiWS dataset and not any alterations. This is because the alterations of a lexical item should be treated the same as the lexical item itself. For instance, the lexical item "Abschluss" will be the final column in the matrix and any sentiments of alterations such as "Abschlusses" will be added to the lexical item column. These columns with alterations will then be removed.
+
+```{r}
 # calculate sum for specified columns
-calculate_column_sums <- function(dtm_forms, contained_alt_forms) {
-  selected_columns <- dtm_forms[, contained_alt_forms, drop = FALSE]
+calculate_column_sums <- function(m, col_names) {
+  selected_cols <- m[, col_names, drop = FALSE]
   
-  if (ncol(selected_columns) > 1) {
-    result <- apply(selected_columns, 1, sum)
+  if (ncol(selected_cols) > 1) {
+    result <- apply(selected_cols, 1, sum)
   } else {
-    result <- selected_columns
+    result <- selected_cols
   }
   
   return(result)
@@ -167,6 +231,7 @@ combine_forms <- function(dtm_forms, lexical_items, alt_forms) {
 ```
 
 ## Column-wise Matrix Multiplication of Sentiment Scores
+
 The application of our sentiment scores to the matrix which contains each sentence and the Leipzig SentiWS semantically-relevant terms is carried out by a matrix multiplication of the matrix with the diagonal of the relevant sentiment scores.
 
 ```{r}
@@ -186,7 +251,7 @@ apply_sentiment_scores <- function(dtm_forms,
 
 ## Sentiment Matrix
 
-The sentiment matrix corresponds to
+The final sentiment matrix corresponds to
 
 -   (sentence, sentiment-relevant term) = sentiment score
 
@@ -251,14 +316,23 @@ run_sentiment_analysis <- function(sentences, df_sentiws_neg, df_sentiws_pos) {
 ```
 
 ## Run Sentiment Analysis
+
 We can now combine everything that we've worked on so far to run the sentiment analysis on our German sentence dataset.
 
 ```{r}
 treebank_data_path <- "data/propn-grew-query-results.tsv"
 treebank_data <- load_treebank(treebank_data_path, treebank_cols)
+
+print(head(treebank_data$full_sentence))
 print(paste("Number of sentences: ", nrow(treebank_data)))
+treebank_data
+
+# convert sentences to string vector
 n_sentences <- 260
 sentences <- as.vector(treebank_data$full_sentence[1:n_sentences])
+```
+
+```{r}
 
 sentiments <- run_sentiment_analysis(sentences, df_sentiws_neg, df_sentiws_pos)
 
@@ -284,6 +358,7 @@ View(treebank_data)
 ```
 
 ## Plotting the Results
+
 We will view the proper nouns which are referenced in the top 15 most positive and negative sentences. These will be plotted using GGPlot.
 
 ```{r}
@@ -315,6 +390,7 @@ ggplot(df_top_bottom,
 ```
 
 We may be interested to see the entire sentence for each of these, so these will also be printed below.
+
 ```{r}
 print_sentiment_messages <- function(df) {
   apply(df, 1, function(row) {
